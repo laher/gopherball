@@ -24,6 +24,7 @@ type Ball struct {
 	common.SpaceComponent
 	common.CollisionComponent
 	SpeedComponent
+	maxSpeedFactor float32
 }
 
 type Score struct {
@@ -54,11 +55,18 @@ func (_ *GopherBallGame) Preload() {
 	}
 }
 
+var (
+	edgeMargin  float64 = 20
+	scrollSpeed float32 = 1500
+	maxX                = float64(800)
+	maxY                = float64(400)
+)
+
 func (_ *GopherBallGame) Setup(w *ecs.World) {
 	common.SetBackground(color.Gray16{0x5555})
 	w.AddSystem(&common.RenderSystem{})
 	w.AddSystem(&common.CollisionSystem{})
-	w.AddSystem(&common.MouseSystem{})
+	//w.AddSystem(&common.MouseSystem{})
 	w.AddSystem(&SpeedSystem{})
 	w.AddSystem(&ControlSystem{})
 	w.AddSystem(&BounceSystem{})
@@ -74,7 +82,7 @@ func (_ *GopherBallGame) Setup(w *ecs.World) {
 		log.Println("Could not load texture:", err)
 	}
 
-	ball := Ball{BasicEntity: ecs.NewBasic()}
+	ball := Ball{BasicEntity: ecs.NewBasic(), maxSpeedFactor: 0.5}
 	ball.RenderComponent = common.RenderComponent{
 		Drawable: ballTexture,
 		Scale:    engo.Point{2, 2},
@@ -88,8 +96,13 @@ func (_ *GopherBallGame) Setup(w *ecs.World) {
 		Main:  true,
 		Solid: true,
 	}
-	ball.SpeedComponent = SpeedComponent{Point: engo.Point{300, 1000}}
-
+	ball.SpeedComponent = SpeedComponent{Point: engo.Point{10, 30}}
+	/*
+		bounds := engo.AABB{
+			engo.Point{-400, -200},
+			engo.Point{400, 200},
+		}
+	*/
 	// Add our entity to the appropriate systems
 	for _, system := range w.Systems() {
 		switch sys := system.(type) {
@@ -100,7 +113,7 @@ func (_ *GopherBallGame) Setup(w *ecs.World) {
 		case *SpeedSystem:
 			sys.Add(&ball.BasicEntity, &ball.SpeedComponent, &ball.SpaceComponent)
 		case *BounceSystem:
-			sys.Add(&ball.BasicEntity, &ball.SpeedComponent, &ball.SpaceComponent)
+			sys.Add(&ball.BasicEntity, &ball.SpeedComponent, &ball.SpaceComponent, ball.maxSpeedFactor)
 		}
 	}
 
@@ -156,7 +169,7 @@ func (_ *GopherBallGame) Setup(w *ecs.World) {
 	setupPost(postTexture, engo.Point{float32(0), (engo.GameHeight() - postTexture.Height()) * 2 / 3}, w)
 	setupPost(postTexture, engo.Point{engo.GameWidth() - postTexture.Width(), (engo.GameHeight()-postTexture.Height())/3 - postTexture.Height()}, w)
 	setupPost(postTexture, engo.Point{engo.GameWidth() - postTexture.Width(), (engo.GameHeight() - postTexture.Height()) * 2 / 3}, w)
-
+	gophers := []*Gopher{}
 	for i := 0; i < 2; i++ {
 		gopher := Gopher{BasicEntity: ecs.NewBasic()}
 		gopher.RenderComponent = common.RenderComponent{
@@ -191,7 +204,10 @@ func (_ *GopherBallGame) Setup(w *ecs.World) {
 				sys.Add(&gopher.BasicEntity, &gopher.ControlComponent, &gopher.SpaceComponent)
 			}
 		}
+		gophers = append(gophers, &gopher)
 	}
+	//w.AddSystem(&EntityEdgeScroller{scrollSpeed, edgeMargin, &gophers[0].SpaceComponent})
+	//w.AddSystem(&common.EntityScroller{SpaceComponent: &gophers[0].SpaceComponent, TrackingBounds: bounds})
 }
 
 func (*GopherBallGame) Type() string { return "GopherBallGame" }
@@ -280,14 +296,15 @@ type bounceEntity struct {
 	*ecs.BasicEntity
 	*SpeedComponent
 	*common.SpaceComponent
+	maxSpeedFactor float32
 }
 
 type BounceSystem struct {
 	entities []bounceEntity
 }
 
-func (b *BounceSystem) Add(basic *ecs.BasicEntity, speed *SpeedComponent, space *common.SpaceComponent) {
-	b.entities = append(b.entities, bounceEntity{basic, speed, space})
+func (b *BounceSystem) Add(basic *ecs.BasicEntity, speed *SpeedComponent, space *common.SpaceComponent, maxSpeedFactor float32) {
+	b.entities = append(b.entities, bounceEntity{basic, speed, space, maxSpeedFactor})
 }
 
 func (b *BounceSystem) Remove(basic ecs.BasicEntity) {
@@ -303,6 +320,8 @@ func (b *BounceSystem) Remove(basic ecs.BasicEntity) {
 	}
 }
 
+var gameMargin = float32(16)
+
 func (b *BounceSystem) Update(dt float32) {
 	for _, e := range b.entities {
 		if e.SpaceComponent.Position.X < 0 {
@@ -312,8 +331,8 @@ func (b *BounceSystem) Update(dt float32) {
 			} else {
 				engo.Mailbox.Dispatch(ScoreMessage{1})
 
-				e.SpaceComponent.Position.X = (engo.GameWidth() / 2) - 16
-				e.SpaceComponent.Position.Y = (engo.GameHeight() / 2) - 16
+				e.SpaceComponent.Position.X = (engo.GameWidth() / 2) - gameMargin
+				e.SpaceComponent.Position.Y = (engo.GameHeight() / 2) - gameMargin
 				e.SpeedComponent.X = engo.GameWidth() * rand.Float32()
 				e.SpeedComponent.Y = engo.GameHeight() * rand.Float32()
 			}
@@ -324,24 +343,38 @@ func (b *BounceSystem) Update(dt float32) {
 			e.SpeedComponent.Y *= -1
 		}
 
-		if e.SpaceComponent.Position.X > (engo.GameWidth() - 16) {
+		if e.SpaceComponent.Position.X > (engo.GameWidth() - gameMargin) {
 
 			if e.SpaceComponent.Position.Y < engo.GameHeight()/3 || e.SpaceComponent.Position.Y > engo.GameHeight()*2/3 {
-				e.SpaceComponent.Position.X = engo.GameWidth() - 16
+				e.SpaceComponent.Position.X = engo.GameWidth() - gameMargin
 				e.SpeedComponent.X *= -1
 			} else {
 				engo.Mailbox.Dispatch(ScoreMessage{2})
 
-				e.SpaceComponent.Position.X = (engo.GameWidth() / 2) - 16
-				e.SpaceComponent.Position.Y = (engo.GameHeight() / 2) - 16
+				e.SpaceComponent.Position.X = (engo.GameWidth() / 2) - gameMargin
+				e.SpaceComponent.Position.Y = (engo.GameHeight() / 2) - gameMargin
 				e.SpeedComponent.X = engo.GameWidth() * rand.Float32()
 				e.SpeedComponent.Y = engo.GameHeight() * rand.Float32()
 			}
 		}
 
-		if e.SpaceComponent.Position.Y > (engo.GameHeight() - 16) {
-			e.SpaceComponent.Position.Y = engo.GameHeight() - 16
+		if e.SpaceComponent.Position.Y > (engo.GameHeight() - gameMargin) {
+			e.SpaceComponent.Position.Y = engo.GameHeight() - gameMargin
 			e.SpeedComponent.Y *= -1
+		}
+		if e.maxSpeedFactor > 0 {
+			maxSpeedX := engo.GameWidth() * e.maxSpeedFactor
+			maxSpeedY := engo.GameHeight() * e.maxSpeedFactor
+			if e.SpeedComponent.Y > maxSpeedY {
+				e.SpeedComponent.Y = maxSpeedY
+			} else if e.SpeedComponent.Y < -maxSpeedY {
+				e.SpeedComponent.Y = -maxSpeedY
+			}
+			if e.SpeedComponent.X > maxSpeedX {
+				e.SpeedComponent.X = maxSpeedX
+			} else if e.SpeedComponent.X < -maxSpeedX {
+				e.SpeedComponent.X = -maxSpeedX
+			}
 		}
 	}
 }
@@ -390,8 +423,8 @@ func (c *ControlSystem) Remove(basic ecs.BasicEntity) {
 
 func (c *ControlSystem) Update(dt float32) {
 	for _, e := range c.entities {
-		vspeed := engo.GameHeight() * dt
-		hspeed := engo.GameWidth() * dt
+		vspeed := engo.GameHeight() * dt / 2
+		hspeed := engo.GameWidth() * dt / 2
 		axis := engo.Input.Axis(e.ControlComponent.Scheme)
 		e.SpaceComponent.Position.Y += vspeed * axis.Pairs[0].Value()
 		e.SpaceComponent.Position.X += hspeed * axis.Pairs[1].Value()
@@ -503,8 +536,8 @@ func (ScoreMessage) Type() string {
 func main() {
 	opts := engo.RunOptions{
 		Title:         "Gopherball",
-		Width:         800,
-		Height:        400,
+		Width:         int(maxX),
+		Height:        int(maxY),
 		ScaleOnResize: true,
 	}
 	engo.Run(opts, &GopherBallGame{})
